@@ -1,0 +1,5 @@
+# Firebase service account (DO NOT COMMIT)
+serviceAccount.json
+
+# Optional: ignore env files
+.env
