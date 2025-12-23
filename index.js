@@ -1,24 +1,70 @@
-function startWS() {
-  console.log("🔌 Connecting to TwelveData WS...");
+import WebSocket from "ws";
+import admin from "firebase-admin";
 
-  const ws = new WebSocket(
-    "wss://ws.twelvedata.com/v1/quotes?apikey=" + TWELVE_KEY
+// ===============================
+// BOOT LOGS
+// ===============================
+console.log("🚀 Worker booting...");
+
+console.log("ENV CHECK:", {
+  TWELVE: !!process.env.TWELVE_DATA_KEY,
+  DB: !!process.env.FIREBASE_DATABASE_URL,
+  SA: !!process.env.FIREBASE_SERVICE_ACCOUNT,
+});
+
+// ===============================
+// FIREBASE INIT
+// ===============================
+let serviceAccount;
+
+try {
+  serviceAccount = JSON.parse(
+    Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, "base64").toString("utf8")
   );
+  console.log("✅ Firebase service account parsed");
+} catch (err) {
+  console.error("❌ Failed to parse Firebase service account", err);
+  process.exit(1);
+}
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  databaseURL: process.env.FIREBASE_DATABASE_URL,
+});
+
+const db = admin.database();
+const API_KEY = process.env.TWELVE_DATA_KEY;
+
+// ===============================
+// WEBSOCKET CONNECT (YOUR LINK)
+// ===============================
+function connectWS() {
+  const WS_URL =
+    "wss://ws.twelvedata.com/v1/quotes/price?apikey=" + API_KEY;
+
+  console.log("🔌 Connecting to TwelveData WS...");
+  console.log("URL:", WS_URL);
+
+  const ws = new WebSocket(WS_URL);
 
   ws.on("open", () => {
-    console.log("✅ TwelveData WS Connected");
+    console.log("✅ WebSocket connection opened");
 
-    ws.send(JSON.stringify({
-      action: "subscribe",
-      params: {
-        symbols: "XAUUSD,BTC/USD,EUR/USD"
-      }
-    }));
+    // Subscribe (will be ignored if endpoint not WS-enabled)
+    ws.send(
+      JSON.stringify({
+        action: "subscribe",
+        params: {
+          symbols: "XAUUSD,BTC/USD,EUR/USD",
+        },
+      })
+    );
   });
 
   ws.on("message", async (msg) => {
     try {
       const data = JSON.parse(msg.toString());
+
       if (!data.symbol || !data.price) return;
 
       const symbol = data.symbol.replace("/", "");
@@ -29,18 +75,29 @@ function startWS() {
       });
 
       console.log(`📈 ${symbol} → ${data.price}`);
-    } catch (e) {
-      console.error("❌ Message parse error", e);
+    } catch (err) {
+      console.error("❌ Message parse error", err);
     }
   });
 
-  ws.on("close", () => {
-    console.warn("⚠️ WS closed. Reconnecting in 5s...");
-    setTimeout(startWS, 5000);
+  ws.on("error", (err) => {
+    console.error("❌ WS error:", err.message);
   });
 
-  ws.on("error", (err) => {
-    console.error("❌ WS error", err.message);
-    ws.close();
+  ws.on("close", () => {
+    console.warn("⚠️ WS closed. Reconnecting in 3s...");
+    setTimeout(connectWS, 3000);
   });
 }
+
+// ===============================
+// START WORKER
+// ===============================
+connectWS();
+
+// ===============================
+// KEEP PROCESS ALIVE (RAILWAY)
+// ===============================
+setInterval(() => {
+  console.log("🫀 Worker heartbeat");
+}, 30000);
