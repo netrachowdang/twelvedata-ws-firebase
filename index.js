@@ -1,5 +1,6 @@
 import WebSocket from "ws";
 import admin from "firebase-admin";
+import fetch from "node-fetch"; // if using Node <18
 
 // ===============================
 // BOOT LOGS
@@ -92,77 +93,62 @@ function connectTwelveWS() {
 }
 
 // ===============================
-// BINANCE WS (CRYPTO - STABLE)
+// BINANCE REST (WORKS ON RAILWAY)
 // ===============================
-function connectBinanceWS() {
-  console.log("🔌 Connecting Binance WS...");
+const cryptoNames = {
+  BTCUSDT: "Bitcoin",
+  ETHUSDT: "Ethereum",
+  BNBUSDT: "Binance Coin",
+  XRPUSDT: "Ripple",
+  ADAUSDT: "Cardano",
+  SOLUSDT: "Solana",
+};
 
-  const streams = [
-    "btcusdt@miniTicker",
-    "ethusdt@miniTicker",
-    "bnbusdt@miniTicker",
-    "xrpusdt@miniTicker",
-    "adausdt@miniTicker",
-    "solusdt@miniTicker",
-  ].join("/");
+const symbols = Object.keys(cryptoNames);
 
-  const WS_URL = `wss://stream.binance.com:9443/stream?streams=${streams}`;
+// Store last prices to reduce Firebase writes
+const lastPrices = {};
 
-  const ws = new WebSocket(WS_URL);
+async function fetchBinancePrices() {
+  try {
+    const res = await fetch(
+      "https://api.binance.com/api/v3/ticker/price"
+    );
 
-  // ✅ SYMBOL → NAME MAP
-  const cryptoNames = {
-    BTCUSDT: "Bitcoin",
-    ETHUSDT: "Ethereum",
-    BNBUSDT: "Binance Coin",
-    XRPUSDT: "Ripple",
-    ADAUSDT: "Cardano",
-    SOLUSDT: "Solana",
-  };
+    const data = await res.json();
 
-  ws.on("open", () => {
-    console.log("✅ Binance connected");
-  });
+    for (let item of data) {
+      if (!symbols.includes(item.symbol)) continue;
 
-  ws.on("message", async (msg) => {
-    try {
-      const json = JSON.parse(msg.toString());
-      const data = json.data;
+      const price = parseFloat(item.price);
 
-      if (!data || !data.s || !data.c) return;
+      // ✅ Avoid unnecessary Firebase writes
+      if (lastPrices[item.symbol] === price) continue;
 
-      const symbol = data.s;
-      const price = parseFloat(data.c);
+      lastPrices[item.symbol] = price;
 
-      await db.ref(`prices/${symbol}`).set({
-        symbol: symbol,
-        name: cryptoNames[symbol] || symbol,
+      await db.ref(`prices/${item.symbol}`).set({
+        symbol: item.symbol,
+        name: cryptoNames[item.symbol] || item.symbol,
         price: price,
         source: "binance",
         timestamp: Date.now(),
       });
 
-      console.log(`💰 [BN] ${symbol} (${cryptoNames[symbol]}) → ${price}`);
-    } catch (err) {
-      console.error("❌ Binance parse error", err);
+      console.log(`💰 [BN-REST] ${item.symbol} → ${price}`);
     }
-  });
-
-  ws.on("close", () => {
-    console.warn("⚠️ Binance closed. Reconnecting...");
-    setTimeout(connectBinanceWS, 3000);
-  });
-
-  ws.on("error", (err) => {
-    console.error("❌ Binance WS error:", err.message);
-  });
+  } catch (err) {
+    console.error("❌ Binance REST error:", err.message);
+  }
 }
 
 // ===============================
-// START BOTH SERVICES
+// START SERVICES
 // ===============================
 connectTwelveWS();
-connectBinanceWS();
+
+// Run every 5 seconds
+setInterval(fetchBinancePrices, 5000);
 
 // ===============================
 // KEEP PROCESS ALIVE (RAILWAY)
