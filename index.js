@@ -55,7 +55,7 @@ function connectWS() {
       JSON.stringify({
         action: "subscribe",
         params: {
-          symbols: "XAU/USD,BTC/USD",
+          symbols: "XAU/USD,BTC/USD,EUR/USD",
         },
       })
     );
