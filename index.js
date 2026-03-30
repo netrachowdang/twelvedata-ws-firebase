@@ -2,17 +2,6 @@ import WebSocket from "ws";
 import admin from "firebase-admin";
 
 // ===============================
-// BOOT LOGS
-// ===============================
-console.log("🚀 Worker booting...");
-
-console.log("ENV CHECK:", {
-  TWELVE: !!process.env.TWELVE_DATA_KEY,
-  DB: !!process.env.FIREBASE_DATABASE_URL,
-  SA: !!process.env.FIREBASE_SERVICE_ACCOUNT,
-});
-
-// ===============================
 // FIREBASE INIT
 // ===============================
 let serviceAccount;
@@ -21,9 +10,9 @@ try {
   serviceAccount = JSON.parse(
     Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, "base64").toString("utf8")
   );
-  console.log("✅ Firebase service account parsed");
+  console.log("✅ Firebase initialized");
 } catch (err) {
-  console.error("❌ Failed to parse Firebase service account", err);
+  console.error("❌ Firebase init error", err);
   process.exit(1);
 }
 
@@ -35,27 +24,24 @@ admin.initializeApp({
 const db = admin.database();
 const API_KEY = process.env.TWELVE_DATA_KEY;
 
+const symbols = ["XAU/USD", "BTC/USD", "EUR/USD"];
+
 // ===============================
-// WEBSOCKET CONNECT (YOUR LINK)
+// LIVE PRICE (WEBSOCKET)
 // ===============================
 function connectWS() {
-  const WS_URL =
-    "wss://ws.twelvedata.com/v1/quotes/price?apikey=" + API_KEY;
-
-  console.log("🔌 Connecting to TwelveData WS...");
-  console.log("URL:", WS_URL);
-
-  const ws = new WebSocket(WS_URL);
+  const ws = new WebSocket(
+    "wss://ws.twelvedata.com/v1/quotes/price?apikey=" + API_KEY
+  );
 
   ws.on("open", () => {
-    console.log("✅ WebSocket connection opened");
+    console.log("✅ WS Connected");
 
-    // Subscribe (will be ignored if endpoint not WS-enabled)
     ws.send(
       JSON.stringify({
         action: "subscribe",
         params: {
-          symbols: "XAU/USD,BTC/USD,EUR/USD,AAPL",
+          symbols: symbols.join(","),
         },
       })
     );
@@ -64,7 +50,6 @@ function connectWS() {
   ws.on("message", async (msg) => {
     try {
       const data = JSON.parse(msg.toString());
-
       if (!data.symbol || !data.price) return;
 
       const symbol = data.symbol.replace("/", "");
@@ -75,29 +60,70 @@ function connectWS() {
       });
 
       console.log(`📈 ${symbol} → ${data.price}`);
-    } catch (err) {
-      console.error("❌ Message parse error", err);
+    } catch (e) {
+      console.error("WS error", e);
     }
   });
 
-  ws.on("error", (err) => {
-    console.error("❌ WS error:", err.message);
-  });
-
-  ws.on("close", () => {
-    console.warn("⚠️ WS closed. Reconnecting in 3s...");
-    setTimeout(connectWS, 3000);
-  });
+  ws.on("close", () => setTimeout(connectWS, 3000));
 }
 
-// ===============================
-// START WORKER
-// ===============================
 connectWS();
 
 // ===============================
-// KEEP PROCESS ALIVE (RAILWAY)
+// CANDLE FETCH
+// ===============================
+async function fetchCandles(symbol, interval) {
+  try {
+    const url = `https://api.twelvedata.com/time_series?symbol=${symbol}&interval=${interval}&outputsize=200&timezone=Asia/Kolkata&apikey=${API_KEY}`;
+
+    const res = await fetch(url);
+    const json = await res.json();
+
+    if (!json.values) return;
+
+    const cleanSymbol = symbol.replace("/", "");
+
+    const candles = json.values.reverse().map((c) => ({
+      time: Math.floor(new Date(c.datetime).getTime() / 1000),
+      open: Number(c.open),
+      high: Number(c.high),
+      low: Number(c.low),
+      close: Number(c.close),
+    }));
+
+    await db.ref(`candles/${cleanSymbol}/${interval}`).set(candles);
+
+    console.log(`📊 ${cleanSymbol} ${interval} updated`);
+  } catch (err) {
+    console.error("Candle error:", err.message);
+  }
+}
+
+// ===============================
+// SCHEDULERS
 // ===============================
 setInterval(() => {
-  console.log("🫀 Worker heartbeat");
-}, 30000);
+  symbols.forEach((s) => fetchCandles(s, "5min"));
+}, 5 * 60 * 1000);
+
+setInterval(() => {
+  symbols.forEach((s) => fetchCandles(s, "15min"));
+}, 15 * 60 * 1000);
+
+setInterval(() => {
+  symbols.forEach((s) => fetchCandles(s, "30min"));
+}, 30 * 60 * 1000);
+
+// ===============================
+// INITIAL LOAD
+// ===============================
+(async () => {
+  console.log("🚀 Initial load");
+
+  for (let s of symbols) {
+    await fetchCandles(s, "5min");
+    await fetchCandles(s, "15min");
+    await fetchCandles(s, "30min");
+  }
+})();
